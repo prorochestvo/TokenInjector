@@ -2,6 +2,7 @@ package tokeninjector
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"github.com/prorochestvo/tokeninjector/internal/crypto/aes"
 	"github.com/twinj/uuid"
@@ -234,8 +235,13 @@ func convertFromByte(data []byte) (userId []byte, userName []byte, userRoleId ui
 }
 
 // encrypt encrypts the data with the secret key.
-func encrypt(data, secretKey []byte) ([]byte, error) {
-	var err error
+func encrypt(data, secretKey []byte) (b []byte, err error) {
+	defer func() {
+		if e := recover(); e != nil {
+			err = errors.Join(err, fmt.Errorf("panic: %v", e))
+		}
+	}()
+
 	// hash crc32
 	hash := crc32.Checksum(data, crc32TableHash)
 
@@ -266,52 +272,63 @@ func encrypt(data, secretKey []byte) ([]byte, error) {
 	}
 
 	// aes encryption
-	externalVersion, err := aes.Marshal(dataset, secretKey)
+	b, err = aes.Marshal(dataset, secretKey)
 	if err != nil {
 		return nil, err
 	}
 
-	return externalVersion, nil
+	return
 }
 
 // decrypt decrypts the data with the secret key.
-func decrypt(data, secretKey []byte) ([]byte, error) {
+func decrypt(data, secretKey []byte) (b []byte, err error) {
+	defer func() {
+		if e := recover(); e != nil {
+			err = errors.Join(err, fmt.Errorf("panic: %v", e))
+		}
+	}()
+
 	var l uint64 = 0
 
 	// aes decryption
-	internalVersion, err := aes.Unmarshal(data, secretKey)
+	var dataset []byte
+	dataset, err = aes.Unmarshal(data, secretKey)
 	if err != nil {
 		return nil, err
 	}
 
 	var lData uint64 = 0
-	lData = lData | ((uint64(internalVersion[l+0]) << 56) & 0xFF00000000000000)
-	lData = lData | ((uint64(internalVersion[l+1]) << 48) & 0x00FF000000000000)
-	lData = lData | ((uint64(internalVersion[l+2]) << 40) & 0x0000FF0000000000)
-	lData = lData | ((uint64(internalVersion[l+3]) << 32) & 0x000000FF00000000)
-	lData = lData | ((uint64(internalVersion[l+4]) << 24) & 0x00000000FF000000)
-	lData = lData | ((uint64(internalVersion[l+5]) << 16) & 0x0000000000FF0000)
-	lData = lData | ((uint64(internalVersion[l+6]) << 8) & 0x000000000000FF00)
-	lData = lData | (uint64(internalVersion[l+7]) & 0x00000000000000FF)
+	lData = lData | ((uint64(dataset[l+0]) << 56) & 0xFF00000000000000)
+	lData = lData | ((uint64(dataset[l+1]) << 48) & 0x00FF000000000000)
+	lData = lData | ((uint64(dataset[l+2]) << 40) & 0x0000FF0000000000)
+	lData = lData | ((uint64(dataset[l+3]) << 32) & 0x000000FF00000000)
+	lData = lData | ((uint64(dataset[l+4]) << 24) & 0x00000000FF000000)
+	lData = lData | ((uint64(dataset[l+5]) << 16) & 0x0000000000FF0000)
+	lData = lData | ((uint64(dataset[l+6]) << 8) & 0x000000000000FF00)
+	lData = lData | (uint64(dataset[l+7]) & 0x00000000000000FF)
 	l += 8
 
+	if lData > uint64(len(dataset))-l {
+		return nil, fmt.Errorf("incorrect dataset size")
+	}
+
 	// dataset
-	dataset := internalVersion[l : l+lData]
+	b = dataset[l : l+lData]
 	l += lData
 
 	// hash crc32
 	hash := uint32(0)
-	hash = hash | ((uint32(internalVersion[l+3]) << 24) & 0xFF000000)
-	hash = hash | ((uint32(internalVersion[l+2]) << 16) & 0x00FF0000)
-	hash = hash | ((uint32(internalVersion[l+1]) << 8) & 0x0000FF00)
-	hash = hash | (uint32(internalVersion[l+0]) & 0x000000FF)
+	hash = hash | ((uint32(dataset[l+3]) << 24) & 0xFF000000)
+	hash = hash | ((uint32(dataset[l+2]) << 16) & 0x00FF0000)
+	hash = hash | ((uint32(dataset[l+1]) << 8) & 0x0000FF00)
+	hash = hash | (uint32(dataset[l+0]) & 0x000000FF)
 	l += 4
 
-	if h := crc32.Checksum(dataset, crc32TableHash); hash != h {
+	if h := crc32.Checksum(b, crc32TableHash); hash != h {
 		return nil, fmt.Errorf("incorrect hash of data, %X != %X", hash, h)
 	}
 
-	return dataset, nil
+	return
 }
 
 var crc32TableHash = crc32.MakeTable(bits.Reverse32(0xF4ACFB10)) // CRM32 for hash of token data
